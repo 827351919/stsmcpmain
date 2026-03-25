@@ -138,6 +138,67 @@ async def lookup_builds(character_name: str, max_results: int = 5) -> str:
     return _knowledge.lookup_builds(character_name, max_results=max_results)
 
 
+@mcp.tool()
+async def lookup_character(character_name: str) -> str:
+    """Look up a character profile and playstyle summary.
+
+    Args:
+        character_name: Character name in English or Chinese.
+    """
+    return _knowledge.lookup_character(character_name)
+
+
+@mcp.tool()
+async def lookup_event(event_name: str) -> str:
+    """Look up an event and summarize its visible options.
+
+    Args:
+        event_name: Event name or slug.
+    """
+    return _knowledge.lookup_event(event_name)
+
+
+@mcp.tool()
+async def lookup_potion(potion_name: str) -> str:
+    """Look up a potion, including usage and targeting.
+
+    Args:
+        potion_name: Potion name or slug.
+    """
+    return _knowledge.lookup_potion(potion_name)
+
+
+@mcp.tool()
+async def lookup_power(power_name: str) -> str:
+    """Look up a power or status effect.
+
+    Args:
+        power_name: Power/status name or slug.
+    """
+    return _knowledge.lookup_power(power_name)
+
+
+@mcp.tool()
+async def lookup_enchantment(enchantment_name: str) -> str:
+    """Look up an enchantment and summarize its gameplay effect.
+
+    Args:
+        enchantment_name: Enchantment name or slug.
+    """
+    return _knowledge.lookup_enchantment(enchantment_name)
+
+
+@mcp.tool()
+async def lookup_mechanic(query: str, max_results: int = 5) -> str:
+    """Search core game mechanics notes.
+
+    Args:
+        query: Mechanic keyword such as energy, block, weak, poison, or draw.
+        max_results: Maximum number of notes to return.
+    """
+    return _knowledge.lookup_mechanic(query, max_results=max_results)
+
+
 def _safe_get(mapping: dict[str, Any] | None, *keys: str, default: Any = None) -> Any:
     current: Any = mapping
     for key in keys:
@@ -256,6 +317,101 @@ def _combat_knowledge_notes(hand: list[dict[str, Any]], playable: list[dict[str,
     return notes
 
 
+def _collect_power_names(entity: dict[str, Any]) -> list[str]:
+    powers = entity.get("powers") or entity.get("status") or []
+    names: list[str] = []
+    for power in powers:
+        if not isinstance(power, dict):
+            continue
+        name = str(power.get("name", "") or power.get("title", "")).strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _status_knowledge_notes(state: dict[str, Any], max_notes: int = 4) -> list[str]:
+    notes: list[str] = []
+    seen: set[str] = set()
+
+    player = state.get("player") or {}
+    for power_name in _collect_power_names(player):
+        key = power_name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        note = _knowledge.brief_power_note(power_name)
+        if note:
+            notes.append(f"Status cue: {note}")
+        if len(notes) >= max_notes:
+            return notes
+
+    battle = state.get("battle") or {}
+    for enemy in battle.get("enemies") or []:
+        for power_name in _collect_power_names(enemy):
+            key = power_name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            note = _knowledge.brief_power_note(power_name)
+            if note:
+                notes.append(f"Status cue: {note}")
+            if len(notes) >= max_notes:
+                return notes
+
+    return notes[:max_notes]
+
+
+def _mechanic_knowledge_notes(queries: list[str], max_notes: int = 2) -> list[str]:
+    notes: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        text = _knowledge.lookup_mechanic(query, max_results=1)
+        if not text.startswith("# Mechanics"):
+            continue
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            notes.append(f"Mechanic cue: {lines[1].lstrip('- ').strip()} {lines[2].strip()}")
+        if len(notes) >= max_notes:
+            break
+    return notes
+
+
+def _event_knowledge_notes(event_state: dict[str, Any]) -> list[str]:
+    event_name = str(event_state.get("name", "") or event_state.get("id", "")).strip()
+    if not event_name:
+        return []
+    note = _knowledge.brief_event_note(event_name)
+    return [f"Event cue: {note}"] if note else []
+
+
+def _potion_knowledge_notes(state: dict[str, Any], max_notes: int = 3) -> list[str]:
+    notes: list[str] = []
+    seen: set[str] = set()
+
+    player = state.get("player") or {}
+    for potion in player.get("potions") or []:
+        if not isinstance(potion, dict):
+            continue
+        name = str(potion.get("name", "")).strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        note = _knowledge.brief_potion_note(name)
+        if note:
+            notes.append(f"Potion cue: {note}")
+        if len(notes) >= max_notes:
+            break
+
+    return notes
+
+
 def _contextual_advice_from_state(state: dict[str, Any]) -> str:
     state_type = state.get("state_type", "unknown")
     player = state.get("player") or {}
@@ -326,6 +482,30 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
             for note in knowledge_notes[:5]:
                 lines.append(f"- {note}")
 
+        status_notes = _status_knowledge_notes(state, max_notes=4)
+        mechanic_queries: list[str] = []
+        if any("weak" in str(name).lower() for name in attacking):
+            mechanic_queries.append("weak")
+        for enemy in enemies:
+            for power_name in _collect_power_names(enemy):
+                lowered = power_name.casefold()
+                if "poison" in lowered:
+                    mechanic_queries.append("poison")
+                if "vulnerable" in lowered:
+                    mechanic_queries.append("vulnerable")
+                if "weak" in lowered:
+                    mechanic_queries.append("weak")
+        for power_name in _collect_power_names(player):
+            lowered = power_name.casefold()
+            if "block" in lowered or "barricade" in lowered or "blur" in lowered:
+                mechanic_queries.append("block")
+        mechanic_notes = _mechanic_knowledge_notes(mechanic_queries, max_notes=2)
+        if status_notes or mechanic_notes:
+            lines.append("")
+            lines.append("## Status References")
+            for note in status_notes + mechanic_notes:
+                lines.append(f"- {note}")
+
     elif state_type == "combat_rewards":
         rewards = state.get("rewards") or {}
         items = rewards.get("items") or []
@@ -385,6 +565,12 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         ]
         if affordable_relics:
             lines.append(f"- Affordable relics: {', '.join(affordable_relics[:4])}")
+        potion_notes = _potion_knowledge_notes(state, max_notes=3)
+        if potion_notes:
+            lines.append("")
+            lines.append("## Potion References")
+            for note in potion_notes:
+                lines.append(f"- {note}")
 
     elif state_type == "event":
         event = state.get("event") or {}
@@ -395,6 +581,12 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         unlocked = [str(option.get("title", "?")) for option in options if not option.get("locked")]
         if unlocked:
             lines.append(f"- Available options: {', '.join(unlocked[:6])}")
+        event_notes = _event_knowledge_notes(event)
+        if event_notes:
+            lines.append("")
+            lines.append("## Knowledge References")
+            for note in event_notes:
+                lines.append(f"- {note}")
 
     elif state_type == "relic_select":
         relic_select = state.get("relic_select") or {}

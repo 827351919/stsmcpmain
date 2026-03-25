@@ -20,6 +20,12 @@
 | `get_general_strategy(max_chars?)` | Knowledge | Get bundled high-level gameplay strategy notes |
 | `get_contextual_advice()` | Knowledge | Get lightweight state-aware advice using current game state |
 | `lookup_card(card_name)` | Knowledge | Look up a card by English/Chinese name or slug |
+| `lookup_character(character_name)` | Knowledge | Look up a character profile and playstyle summary |
+| `lookup_event(event_name)` | Knowledge | Look up an event and summarize its visible options |
+| `lookup_potion(potion_name)` | Knowledge | Look up a potion including usage and targeting |
+| `lookup_power(power_name)` | Knowledge | Look up a power or status effect |
+| `lookup_enchantment(enchantment_name)` | Knowledge | Look up an enchantment and its effect |
+| `lookup_mechanic(query, max_results?)` | Knowledge | Search core game mechanics notes |
 | `lookup_enemy(enemy_name)` | Knowledge | Look up an enemy and its known move names |
 | `lookup_relic(relic_name)` | Knowledge | Look up a relic by English/Chinese name or slug |
 | `lookup_builds(character_name, max_results?)` | Knowledge | Get a few bundled build recommendations for a character |
