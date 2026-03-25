@@ -1,5 +1,11 @@
 Play Slay the Spire 2 using the MCP tools (`mcp__sts2__*`). Your goal is to win the run while strictly obeying the active run policy when one exists.
 
+## Tool Restriction
+- You must use MCP tools only.
+- Do not use `curl`, raw HTTP requests, `Invoke-RestMethod`, `requests`, or any direct call to `http://localhost:15526`.
+- Do not bypass MCP by calling the raw REST API from Bash, PowerShell, Python, or any other tool.
+- The run policy guard lives in the MCP server wrappers, so bypassing MCP is not allowed.
+
 ## Setup
 1. Read `AGENTS.md` for general MCP calling tips.
 2. Call `get_run_policy()` before making any deck-building decision.
@@ -30,6 +36,7 @@ Play Slay the Spire 2 using the MCP tools (`mcp__sts2__*`). Your goal is to win 
 - On reward, shop, rest, and card-selection screens, inspect the available choices and prefer entries marked by policy metadata such as `policy_tag` and `policy_reason`.
 - If a run policy is active, deck-building decisions must serve that build first and generic value second.
 - Before each non-trivial deck-building decision, briefly state why the chosen option fits the run policy.
+- Before each non-trivial action, output a visible decision summary first, then take the action.
 
 ## Combat Priorities
 - Read the current battle state, enemy intents, energy, hand, and likely lethal lines.
@@ -58,6 +65,8 @@ Play Slay the Spire 2 using the MCP tools (`mcp__sts2__*`). Your goal is to win 
 - Always provide `target` for single-target cards and potions that require one.
 - Claim rewards from right to left when index shifting matters.
 - If the active build is not yet fully online, preserve long-term build integrity instead of stuffing the deck with filler.
+- Never silently act on card rewards, shop choices, upgrades, removals, transforms, or important combat turns. Show the reasoning in user-visible text first.
+- If a card reward or shop card is off-policy, explicitly say that it is off-policy and prefer skipping or choosing a compliant alternative.
 
 ## Learning
 - After boss fights, briefly reflect on what improved or hurt the active build.
