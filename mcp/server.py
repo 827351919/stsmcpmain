@@ -101,6 +101,9 @@ async def get_general_strategy(max_chars: int = 6000) -> str:
 async def lookup_card(card_name: str) -> str:
     """Look up a card from the bundled Slay the Spire 2 knowledge set.
 
+    Use this by default when a key playable card, reward card, or shop card is
+    strategically unclear after `get_contextual_advice()`.
+
     Args:
         card_name: Card name, slug, or Chinese name.
     """
@@ -110,6 +113,9 @@ async def lookup_card(card_name: str) -> str:
 @mcp.tool()
 async def lookup_enemy(enemy_name: str) -> str:
     """Look up an enemy and list its known move names.
+
+    Use this by default for elites, bosses, or any enemy whose intent or move
+    pattern materially affects survival, targeting, or sequencing.
 
     Args:
         enemy_name: Enemy name, slug, or Chinese name.
@@ -121,6 +127,9 @@ async def lookup_enemy(enemy_name: str) -> str:
 async def lookup_relic(relic_name: str) -> str:
     """Look up a relic from the bundled Slay the Spire 2 knowledge set.
 
+    Use this when picking relics, shopping for relics, or when a relic can
+    change how you sequence the current turn or route.
+
     Args:
         relic_name: Relic name, slug, or Chinese name.
     """
@@ -130,6 +139,9 @@ async def lookup_relic(relic_name: str) -> str:
 @mcp.tool()
 async def lookup_builds(character_name: str, max_results: int = 5) -> str:
     """Get a few recommended builds for a character.
+
+    Use this when deck direction, reward valuation, or shop priorities are
+    unclear and you need stronger archetype guidance.
 
     Args:
         character_name: Character name in English or Chinese.
@@ -152,6 +164,9 @@ async def lookup_character(character_name: str) -> str:
 async def lookup_event(event_name: str) -> str:
     """Look up an event and summarize its visible options.
 
+    Use this when an event branch has meaningful long-term consequences and the
+    choice is not obviously trivial.
+
     Args:
         event_name: Event name or slug.
     """
@@ -162,6 +177,9 @@ async def lookup_event(event_name: str) -> str:
 async def lookup_potion(potion_name: str) -> str:
     """Look up a potion, including usage and targeting.
 
+    Use this when potion timing, conservation, or target choice can change the
+    expected outcome of the fight or route.
+
     Args:
         potion_name: Potion name or slug.
     """
@@ -171,6 +189,9 @@ async def lookup_potion(potion_name: str) -> str:
 @mcp.tool()
 async def lookup_power(power_name: str) -> str:
     """Look up a power or status effect.
+
+    Use this when combat math depends on a specific buff, debuff, or scaling
+    effect and you do not want to rely on memory.
 
     Args:
         power_name: Power/status name or slug.
@@ -191,6 +212,9 @@ async def lookup_enchantment(enchantment_name: str) -> str:
 @mcp.tool()
 async def lookup_mechanic(query: str, max_results: int = 5) -> str:
     """Search core game mechanics notes.
+
+    Use this when rules interactions such as block retention, poison timing,
+    weak, vulnerable, draw, or energy behavior may change the best line.
 
     Args:
         query: Mechanic keyword such as energy, block, weak, poison, or draw.
@@ -729,6 +753,128 @@ def _map_knowledge_notes(
     return notes[:max_notes]
 
 
+def _recommended_follow_up_tools(state: dict[str, Any], build_context: dict[str, Any] | None = None) -> list[str]:
+    recommendations: list[str] = []
+    state_type = str(state.get("state_type", "unknown"))
+    player = state.get("player") or {}
+    character = str(player.get("character", "")).strip()
+
+    def add(tool_call: str) -> None:
+        if tool_call not in recommendations:
+            recommendations.append(tool_call)
+
+    if state_type in {"monster", "elite", "boss", "hand_select"}:
+        battle = state.get("battle") or {}
+        battle_player = battle.get("player") or {}
+        enemies = battle.get("enemies") or []
+        playable = [card for card in (battle_player.get("hand") or []) if card.get("can_play")]
+        prioritized_enemies = _prioritized_enemy_targets(enemies, max_enemies=1)
+        if state_type in {"elite", "boss"} and prioritized_enemies:
+            enemy_name = str(prioritized_enemies[0].get("name", "")).strip()
+            if enemy_name:
+                add(f'lookup_enemy("{enemy_name}")')
+        elif prioritized_enemies:
+            enemy_name = str(prioritized_enemies[0].get("name", "")).strip()
+            if enemy_name:
+                add(f'lookup_enemy("{enemy_name}")')
+
+        for card in _pick_core_hand_cards(playable if playable else (battle_player.get("hand") or []), max_cards=1):
+            card_name = str(card.get("name", "")).strip()
+            if card_name:
+                add(f'lookup_card("{card_name}")')
+
+        relic_names = _player_relic_names(state)
+        if relic_names:
+            add(f'lookup_relic("{relic_names[0]}")')
+
+        power_names = _collect_power_names(player)
+        if power_names:
+            add(f'lookup_power("{power_names[0]}")')
+        elif enemies:
+            enemy_powers = _collect_power_names(enemies[0])
+            if enemy_powers:
+                add(f'lookup_power("{enemy_powers[0]}")')
+
+    elif state_type == "card_reward":
+        reward = state.get("card_reward") or {}
+        cards = [card for card in (reward.get("cards") or []) if isinstance(card, dict)]
+        ranked_cards = sorted(
+            cards,
+            key=lambda card: (
+                _item_build_alignment(str(card.get("name", "")).strip(), build_context),
+                1 if str(card.get("rarity", "")).lower() == "rare" else 0,
+                1 if str(card.get("type", "")).lower() == "power" else 0,
+            ),
+            reverse=True,
+        )
+        if ranked_cards:
+            add(f'lookup_card("{str(ranked_cards[0].get("name", "")).strip()}")')
+        if character:
+            add(f'lookup_builds("{character}")')
+
+    elif state_type == "combat_rewards":
+        rewards = state.get("rewards") or {}
+        items = [item for item in (rewards.get("items") or []) if isinstance(item, dict)]
+        for item in items:
+            item_type = str(item.get("type", ""))
+            if item_type == "relic":
+                name = str(item.get("name", "") or _safe_get(item, "relic", "name", default="")).strip()
+                if name:
+                    add(f'lookup_relic("{name}")')
+                    break
+        for item in items:
+            item_type = str(item.get("type", ""))
+            if item_type in {"card", "special_card"}:
+                name = str(item.get("name", "") or _safe_get(item, "card", "name", default="")).strip()
+                if name:
+                    add(f'lookup_card("{name}")')
+                    break
+        if character:
+            add(f'lookup_builds("{character}")')
+
+    elif state_type == "shop":
+        shop = state.get("shop") or {}
+        relics = [item for item in (shop.get("relics") or []) if isinstance(item, dict) and item.get("affordable")]
+        cards = [item for item in (shop.get("cards") or []) if isinstance(item, dict) and item.get("affordable")]
+        if relics:
+            add(f'lookup_relic("{str(relics[0].get("name", "")).strip()}")')
+        elif cards:
+            ranked_cards = sorted(
+                cards,
+                key=lambda card: (
+                    _item_build_alignment(str(card.get("name", "")).strip(), build_context),
+                    1 if str(card.get("type", "")).lower() == "power" else 0,
+                    1 if str(card.get("rarity", "")).lower() in {"rare", "uncommon"} else 0,
+                ),
+                reverse=True,
+            )
+            add(f'lookup_card("{str(ranked_cards[0].get("name", "")).strip()}")')
+        if character:
+            add(f'lookup_builds("{character}")')
+
+    elif state_type == "event":
+        event = state.get("event") or {}
+        event_name = str(event.get("name", "") or event.get("id", "")).strip()
+        if event_name:
+            add(f'lookup_event("{event_name}")')
+
+    elif state_type in {"map", "rest_site"}:
+        if character:
+            add(f'lookup_builds("{character}")')
+
+    elif state_type in {"relic_select", "treasure"}:
+        source = state.get("relic_select") or state.get("treasure") or {}
+        relics = source.get("relics") or []
+        if relics:
+            name = str(relics[0].get("name", "")).strip()
+            if name:
+                add(f'lookup_relic("{name}")')
+        if character:
+            add(f'lookup_builds("{character}")')
+
+    return recommendations[:3]
+
+
 def _contextual_advice_from_state(state: dict[str, Any]) -> str:
     state_type = state.get("state_type", "unknown")
     player = state.get("player") or {}
@@ -981,6 +1127,14 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         lines.append("## General Advice")
         lines.append("- Use get_game_state(json) to inspect the current screen details, then call focused knowledge tools as needed.")
 
+    follow_ups = _recommended_follow_up_tools(state, build_context=build_context)
+    if follow_ups:
+        lines.append("")
+        lines.append("## Recommended Follow-up Tools")
+        lines.append("- Run the most relevant next lookup before locking in the action unless the decision is truly trivial.")
+        for tool_call in follow_ups:
+            lines.append(f"- {tool_call}")
+
     return "\n".join(lines)
 
 
@@ -990,6 +1144,8 @@ async def get_contextual_advice() -> str:
 
     This tool fetches the latest game state as JSON and returns concise,
     state-aware guidance plus a small character build reference when available.
+    Treat it as the first step in the knowledge workflow, not the last one:
+    it also recommends the next targeted lookup tools to call.
     """
     try:
         raw = await _get({"format": "json"})

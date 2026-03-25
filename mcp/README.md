@@ -6,9 +6,10 @@
 - Unified decision SOP:
   1. Call `get_game_state(format="json")`.
   2. Call `get_contextual_advice()`.
-  3. Form a provisional action using a calculated-greed standard.
-  4. If still uncertain, call only the most relevant targeted lookup tools.
+  3. Read the `Recommended Follow-up Tools` section and perform the suggested targeted lookups unless the choice is truly trivial.
+  4. Form a provisional action using a calculated-greed standard.
   5. Execute the action.
+- Knowledge usage is expected on high-value decisions. For elite fights, bosses, card rewards, shops, events, relic choices, and treasure screens, do not stop at `get_contextual_advice()` alone when it recommends a lookup.
 - In combat, `get_contextual_advice()` already prioritizes:
   - enemies currently attacking
   - cards you can actually play this turn
@@ -27,7 +28,7 @@
   - `lookup_event(event_name)` when an event branch has meaningful long-term tradeoffs
   - `lookup_power(power_name)` or `lookup_mechanic(query)` when combat math is unclear
   - `lookup_builds(character_name)` when deck direction is unclear
-- Avoid calling every knowledge tool every turn. Prefer the smallest set of lookups that resolves the current decision.
+- Avoid calling every knowledge tool every turn. Prefer the smallest set of lookups that resolves the current decision, but strongly prefer following the tool-suggested lookups when they are present.
 
 ## Run-End Notifications
 
@@ -59,17 +60,17 @@ uv run --directory /path/to/STS2_MCP/mcp python run_end_notifier.py
 |---|---|---|
 | `get_game_state(format?)` | General | Get current game state (`markdown` or `json`) |
 | `get_general_strategy(max_chars?)` | Knowledge | Get bundled high-level gameplay strategy notes |
-| `get_contextual_advice()` | Knowledge | Get lightweight state-aware advice using current game state |
-| `lookup_card(card_name)` | Knowledge | Look up a card by English/Chinese name or slug |
+| `get_contextual_advice()` | Knowledge | Get state-aware advice plus recommended follow-up knowledge lookups |
+| `lookup_card(card_name)` | Knowledge | Look up a card by English/Chinese name or slug; use by default for unclear key hand/reward/shop cards |
 | `lookup_character(character_name)` | Knowledge | Look up a character profile and playstyle summary |
-| `lookup_event(event_name)` | Knowledge | Look up an event and summarize its visible options |
-| `lookup_potion(potion_name)` | Knowledge | Look up a potion including usage and targeting |
-| `lookup_power(power_name)` | Knowledge | Look up a power or status effect |
+| `lookup_event(event_name)` | Knowledge | Look up an event and summarize its visible options; use for meaningful event tradeoffs |
+| `lookup_potion(potion_name)` | Knowledge | Look up a potion including usage and targeting; use when potion timing can swing the run |
+| `lookup_power(power_name)` | Knowledge | Look up a power or status effect; use when combat math depends on it |
 | `lookup_enchantment(enchantment_name)` | Knowledge | Look up an enchantment and its effect |
-| `lookup_mechanic(query, max_results?)` | Knowledge | Search core game mechanics notes |
-| `lookup_enemy(enemy_name)` | Knowledge | Look up an enemy and its known move names |
-| `lookup_relic(relic_name)` | Knowledge | Look up a relic by English/Chinese name or slug |
-| `lookup_builds(character_name, max_results?)` | Knowledge | Get a few bundled build recommendations for a character |
+| `lookup_mechanic(query, max_results?)` | Knowledge | Search core game mechanics notes; use when rules interactions are unclear |
+| `lookup_enemy(enemy_name)` | Knowledge | Look up an enemy and its known move names; use by default for elites, bosses, or scary attackers |
+| `lookup_relic(relic_name)` | Knowledge | Look up a relic by English/Chinese name or slug; use for relic choices and sequencing changes |
+| `lookup_builds(character_name, max_results?)` | Knowledge | Get bundled build recommendations; use when deck direction or offered cards are unclear |
 | `use_potion(slot, target?)` | General | Use a potion (works in and out of combat) |
 | `proceed_to_map()` | General | Proceed from rewards/rest site/shop/treasure to the map |
 | `combat_play_card(card_index, target?)` | Combat | Play a card from hand |

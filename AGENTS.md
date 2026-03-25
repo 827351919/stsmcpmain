@@ -32,9 +32,13 @@
 - Unified decision SOP:
   1. Call `get_game_state(format="json")`.
   2. Call `get_contextual_advice()`.
-  3. Form a provisional line using a **calculated greed** standard: prefer higher expected payoff when the added risk is controlled.
-  4. Only if still unclear, call 1-2 focused lookup tools to resolve the remaining uncertainty.
+  3. Read the `Recommended Follow-up Tools` section from `get_contextual_advice()` and execute the suggested lookups unless the decision is truly trivial.
+  4. Form a provisional line using a **calculated greed** standard: prefer higher expected payoff when the added risk is controlled.
   5. Execute the action.
+- Knowledge usage should be the default, not the exception. For elite fights, boss fights, card rewards, shops, events, relic choices, and treasure screens, do not stop at `get_contextual_advice()` alone when it suggests a relevant lookup.
+- In combat, if there is a dangerous enemy, an unfamiliar key card, an important relic interaction, or meaningful status math, use at least one targeted knowledge lookup before committing the turn.
+- On `card_reward`, `shop`, `event`, `relic_select`, and `treasure`, use at least one targeted lookup whenever there is a non-obvious option with meaningful long-term value.
+- If `get_contextual_advice()` suggests a follow-up lookup, strongly prefer performing it rather than answering from memory.
 - In combat, `get_contextual_advice()` already tries to reference:
   - enemies that are currently attacking
   - cards you can actually play this turn
@@ -54,7 +58,7 @@
 - Use `lookup_builds(character_name)` when deck direction is unclear and you need high-level archetype guidance for the current character.
 - Use `get_general_strategy()` only as a broad fallback. Prefer state-aware and targeted tools first.
 - Do NOT spam every knowledge tool every turn. Prefer the smallest set of lookups that resolves the current decision.
-- If `get_contextual_advice()` already provides enough guidance, do not redundantly repeat the same lookups unless you need more detail.
+- If `get_contextual_advice()` already provides enough guidance and suggests no follow-up lookup, you may act directly; otherwise, prefer following the suggested knowledge calls first.
 
 ---
 
