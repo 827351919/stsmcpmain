@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "mcp__sts2__get_game_state",
       "mcp__sts2__choose_map_node",

@@ -224,12 +224,14 @@ def _recommend_map_node(next_options: list[dict[str, Any]], hp_ratio: float | No
         return None
 
     preferred_order: list[str]
-    if hp_ratio is not None and hp_ratio < 0.5:
-        preferred_order = ["RestSite", "Shop", "Unknown", "Monster", "Treasure", "Elite"]
+    if hp_ratio is not None and hp_ratio < 0.35:
+        preferred_order = ["RestSite", "Shop", "Treasure", "Unknown", "Monster", "Elite"]
+    elif hp_ratio is not None and hp_ratio < 0.55:
+        preferred_order = ["Shop", "RestSite", "Elite", "Unknown", "Monster", "Treasure"]
     elif hp_ratio is not None and hp_ratio > 0.7:
-        preferred_order = ["Elite", "Monster", "Unknown", "Treasure", "Shop", "RestSite"]
+        preferred_order = ["Elite", "Treasure", "Monster", "Unknown", "Shop", "RestSite"]
     else:
-        preferred_order = ["Monster", "Unknown", "Shop", "Treasure", "RestSite", "Elite"]
+        preferred_order = ["Elite", "Shop", "Unknown", "Monster", "Treasure", "RestSite"]
 
     for preferred in preferred_order:
         for option in next_options:
@@ -412,6 +414,162 @@ def _potion_knowledge_notes(state: dict[str, Any], max_notes: int = 3) -> list[s
     return notes
 
 
+def _reward_knowledge_notes(items: list[dict[str, Any]], max_notes: int = 4) -> list[str]:
+    notes: list[str] = []
+    def reward_score(item: dict[str, Any]) -> tuple[int, int]:
+        item_type = str(item.get("type", ""))
+        description = str(item.get("description", "")).lower()
+        if item_type == "relic":
+            return (5, 0)
+        if item_type in {"card", "special_card"}:
+            if "rare" in description:
+                return (4, 1)
+            return (4, 0)
+        if item_type == "potion":
+            return (3, 0)
+        if item_type == "gold":
+            return (2, 0)
+        return (1, 0)
+
+    ranked_items = sorted(
+        [item for item in items[:6] if isinstance(item, dict)],
+        key=reward_score,
+        reverse=True,
+    )
+    for item in ranked_items:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type", ""))
+        if item_type == "relic":
+            name = str(item.get("name", "") or _safe_get(item, "relic", "name", default="")).strip()
+            if name:
+                note = _knowledge.lookup_relic(name)
+                lines = note.splitlines()
+                effect_line = next((line for line in lines if line.startswith("- Effect:") or line.startswith("- Trigger:")), None)
+                if effect_line:
+                    notes.append(f"Reward cue: relic {name} is a premium reward. {effect_line.lstrip('- ').strip()}")
+                else:
+                    notes.append(f"Reward cue: relic {name} is often worth prioritizing for long-term snowball.")
+        elif item_type in {"potion"}:
+            name = str(item.get("name", "") or _safe_get(item, "potion", "name", default="")).strip()
+            if name:
+                note = _knowledge.brief_potion_note(name)
+                if note:
+                    notes.append(f"Reward cue: {note}")
+        elif item_type in {"card", "special_card"}:
+            description = str(item.get("description", "")).strip()
+            if description:
+                notes.append(f"Reward cue: card reward can raise deck ceiling if it aligns with your archetype. {description}")
+        if len(notes) >= max_notes:
+            break
+    return notes
+
+
+def _card_reward_knowledge_notes(cards: list[dict[str, Any]], max_notes: int = 3) -> list[str]:
+    notes: list[str] = []
+    def card_score(card: dict[str, Any]) -> tuple[int, int, int]:
+        rarity = str(card.get("rarity", "")).lower()
+        card_type = str(card.get("type", "")).lower()
+        power = 1 if card_type == "power" else 0
+        rare = 2 if rarity == "rare" else 1 if rarity == "uncommon" else 0
+        return (rare + power, power, rare)
+
+    ranked_cards = sorted(
+        [card for card in cards if isinstance(card, dict)],
+        key=card_score,
+        reverse=True,
+    )
+    for card in ranked_cards[:max_notes]:
+        if not isinstance(card, dict):
+            continue
+        name = str(card.get("name", "")).strip()
+        if not name:
+            continue
+        note = _knowledge.brief_card_note(name)
+        if note:
+            notes.append(f"Card reward cue: {note}")
+    return notes
+
+
+def _shop_knowledge_notes(shop: dict[str, Any], max_notes: int = 4) -> list[str]:
+    notes: list[str] = []
+
+    affordable_relics = [
+        relic for relic in (shop.get("relics") or [])
+        if isinstance(relic, dict) and relic.get("affordable")
+    ]
+    for relic in affordable_relics:
+        if not isinstance(relic, dict) or not relic.get("affordable"):
+            continue
+        name = str(relic.get("name", "")).strip()
+        if not name:
+            continue
+        text = _knowledge.lookup_relic(name)
+        lines = text.splitlines()
+        summary = next((line for line in lines if line.startswith("- Effect:") or line.startswith("- Description EN:")), None)
+        if summary:
+            notes.append(f"Shop cue: affordable relic {name}. {summary.lstrip('- ').strip()}")
+        else:
+            notes.append(f"Shop cue: affordable relic {name} may be worth checking.")
+        if len(notes) >= max_notes:
+            return notes
+
+    def shop_card_score(card: dict[str, Any]) -> tuple[int, int, int]:
+        rarity = str(card.get("rarity", "")).lower()
+        card_type = str(card.get("type", "")).lower()
+        cost = card.get("cost")
+        power = 2 if card_type == "power" else 0
+        rare = 2 if rarity == "rare" else 1 if rarity == "uncommon" else 0
+        efficient = 1 if isinstance(cost, int) and cost <= 1 else 0
+        return (power + rare + efficient, power, rare)
+
+    affordable_cards = sorted(
+        [
+            card for card in (shop.get("cards") or [])
+            if isinstance(card, dict) and card.get("affordable")
+        ],
+        key=shop_card_score,
+        reverse=True,
+    )
+    for card in affordable_cards:
+        if not isinstance(card, dict) or not card.get("affordable"):
+            continue
+        name = str(card.get("name", "")).strip()
+        if not name:
+            continue
+        note = _knowledge.brief_card_note(name)
+        if note:
+            notes.append(f"Shop cue: {note}")
+        if len(notes) >= max_notes:
+            return notes
+
+    return notes
+
+
+def _map_knowledge_notes(character: str, hp_ratio: float | None, next_options: list[dict[str, Any]], max_notes: int = 2) -> list[str]:
+    notes: list[str] = []
+    build_hint = _knowledge.lookup_builds(character, max_results=1)
+    if not build_hint.startswith("Unknown character") and not build_hint.startswith("No builds found"):
+        lines = build_hint.splitlines()
+        if len(lines) >= 4:
+            notes.append(f"Map cue: current archetype reference suggests {lines[3].strip()}")
+
+    if next_options:
+        types = [str(option.get("type", "?")) for option in next_options[:5]]
+        if hp_ratio is not None and hp_ratio < 0.5:
+            notes.append(
+                f"Map cue: with low HP, still take high-value routes when survival remains credible,"
+                f" but be selective among {', '.join(types)}."
+            )
+        elif hp_ratio is not None and hp_ratio > 0.7:
+            notes.append(
+                f"Map cue: with healthy HP, lean into higher-upside routes such as elites or stronger fights"
+                f" when choices include {', '.join(types)}."
+            )
+
+    return notes[:max_notes]
+
+
 def _contextual_advice_from_state(state: dict[str, Any]) -> str:
     state_type = state.get("state_type", "unknown")
     player = state.get("player") or {}
@@ -451,9 +609,9 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         lines.append(f"- Energy: {energy} | Block: {block} | Playable cards: {len(playable)}")
         if attacking:
             lines.append(f"- Threats attacking now: {', '.join(attacking[:3])}")
-            lines.append("- Cover meaningful incoming damage before dumping all energy into offense.")
+            lines.append("- Cover meaningful incoming damage, but do not overpay to avoid small hits if a greedier line creates much better tempo, scaling, or lethal pressure.")
         else:
-            lines.append("- No obvious attack intent detected, so prioritize damage, draw, scaling, or setup over block.")
+            lines.append("- No obvious attack intent detected, so lean aggressively into damage, draw, scaling, or setup rather than wasting energy on passive lines.")
 
         if playable:
             expensive = [card.get("name", "?") for card in playable if card.get("cost", 99) == energy]
@@ -463,7 +621,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
             if expensive:
                 lines.append(f"- Cards that spend your remaining energy efficiently: {', '.join(expensive[:4])}")
         else:
-            lines.append("- No playable cards detected; ending turn may be correct after checking potion usage.")
+            lines.append("- No playable cards detected; ending turn may be correct after checking whether a potion creates meaningful value.")
 
         if enemies:
             lowest = min(enemies, key=lambda enemy: enemy.get("hp", 10**9))
@@ -514,20 +672,32 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         if items:
             reward_types = ", ".join(str(item.get("type", "?")) for item in items[:6])
             lines.append(f"- Visible rewards: {reward_types}")
-            lines.append("- Relics are usually highest priority, then strong card rewards, then potions if slots are open.")
+            lines.append("- Prioritize the highest-upside reward line: relics first in many cases, then high-impact archetype cards, then potions when they meaningfully swing future fights.")
             lines.append("- Claim rewards from right to left to reduce index shifting mistakes.")
         if rewards.get("can_proceed"):
-            lines.append("- If all useful rewards are already taken, proceed to map.")
+            lines.append("- Proceed only after the meaningful upside has been extracted from the reward screen.")
+        reward_notes = _reward_knowledge_notes(items, max_notes=4)
+        if reward_notes:
+            lines.append("")
+            lines.append("## Knowledge References")
+            for note in reward_notes:
+                lines.append(f"- {note}")
 
     elif state_type == "card_reward":
         reward = state.get("card_reward") or {}
         cards = reward.get("cards") or []
         lines.append("")
         lines.append("## Card Reward Advice")
-        lines.append("- Prefer cards that clearly strengthen your current build; skip mediocre filler.")
+        lines.append("- Prefer cards that materially raise your deck's ceiling or strengthen its current archetype; skip filler, but do not be overly afraid of narrow high-upside picks.")
         if cards:
             names = ", ".join(str(card.get("name", "?")) for card in cards[:5])
             lines.append(f"- Offered cards: {names}")
+        card_reward_notes = _card_reward_knowledge_notes(cards, max_notes=3)
+        if card_reward_notes:
+            lines.append("")
+            lines.append("## Knowledge References")
+            for note in card_reward_notes:
+                lines.append(f"- {note}")
 
     elif state_type == "map":
         map_data = state.get("map") or {}
@@ -539,7 +709,13 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         suggestion = _recommend_map_node(next_options, hp_ratio)
         if suggestion:
             lines.append(f"- {suggestion}")
-        lines.append("- Healthy runs can route into Elites for relics; low-HP runs should bias toward Rest Sites, Shops, and safer fights.")
+        lines.append("- Favor routes with better long-term reward density. Even at lower HP, take the greedier path when the survival risk is still acceptable.")
+        map_notes = _map_knowledge_notes(str(character), hp_ratio, next_options, max_notes=2)
+        if map_notes:
+            lines.append("")
+            lines.append("## Knowledge References")
+            for note in map_notes:
+                lines.append(f"- {note}")
 
     elif state_type == "rest_site":
         rest_site = state.get("rest_site") or {}
@@ -547,9 +723,9 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         lines.append("")
         lines.append("## Rest Site Advice")
         if hp_ratio is not None and hp_ratio < 0.5:
-            lines.append("- HP is low, so Rest is usually safer than greedier options.")
+            lines.append("- HP is low, but Rest is only best if it materially changes survival odds; otherwise a powerful upgrade can still be the higher-value line.")
         else:
-            lines.append("- If HP is comfortable, upgrading a core card is often better than resting.")
+            lines.append("- If HP is at all comfortable, strongly consider upgrading a core card over resting.")
         if options:
             lines.append("- Available options: " + ", ".join(str(option.get("name", "?")) for option in options[:6]))
 
@@ -557,7 +733,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         shop = state.get("shop") or {}
         lines.append("")
         lines.append("## Shop Advice")
-        lines.append("- Prioritize high-impact relics, premium card removal, or cards that fix a real deck weakness.")
+        lines.append("- Prioritize purchases that create a real power spike: high-impact relics first, then premium removal or cards that sharply improve your archetype.")
         affordable_relics = [
             item.get("name", "?")
             for item in (shop.get("relics") or [])
@@ -565,6 +741,12 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         ]
         if affordable_relics:
             lines.append(f"- Affordable relics: {', '.join(affordable_relics[:4])}")
+        shop_notes = _shop_knowledge_notes(shop, max_notes=4)
+        if shop_notes:
+            lines.append("")
+            lines.append("## Knowledge References")
+            for note in shop_notes:
+                lines.append(f"- {note}")
         potion_notes = _potion_knowledge_notes(state, max_notes=3)
         if potion_notes:
             lines.append("")
@@ -577,7 +759,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         options = event.get("options") or []
         lines.append("")
         lines.append("## Event Advice")
-        lines.append("- Read costs carefully. Favor low-risk permanent gains; avoid big HP losses unless the payoff is exceptional.")
+        lines.append("- Read costs carefully. Favor the branch with the best expected long-term payoff, even if it carries controlled downside; avoid only the lines with serious collapse risk.")
         unlocked = [str(option.get("title", "?")) for option in options if not option.get("locked")]
         if unlocked:
             lines.append(f"- Available options: {', '.join(unlocked[:6])}")
@@ -593,7 +775,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         relics = relic_select.get("relics") or []
         lines.append("")
         lines.append("## Relic Choice Advice")
-        lines.append("- Favor relics that immediately improve energy, scaling, or consistency over narrow gimmicks.")
+        lines.append("- Favor relics that most improve your run's ceiling: energy, scaling, consistency, or archetype-defining effects usually beat low-impact safety picks.")
         if relics:
             lines.append("- Offered relics: " + ", ".join(str(relic.get("name", "?")) for relic in relics[:5]))
 
@@ -602,7 +784,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         relics = treasure.get("relics") or []
         lines.append("")
         lines.append("## Treasure Advice")
-        lines.append("- Treasure relics are usually worth taking unless a specific downside is severe.")
+        lines.append("- Treasure relics are usually worth taking; only pass or devalue one when its downside meaningfully harms the run more than its upside helps.")
         if relics:
             lines.append("- Visible relics: " + ", ".join(str(relic.get("name", "?")) for relic in relics[:5]))
 

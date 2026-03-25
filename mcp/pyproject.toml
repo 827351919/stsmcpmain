@@ -10,3 +10,4 @@ dependencies = [
 
 [project.scripts]
 sts2-mcp = "server:main"
+sts2-run-end-notifier = "run_end_notifier:main"

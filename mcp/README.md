@@ -2,15 +2,56 @@
 
 ## Recommended Flow
 
-- For most decisions, start with `get_game_state(format="json")`.
-- If you want a fast recommendation, call `get_contextual_advice()`.
-- In combat, `get_contextual_advice()` already prioritizes the enemies currently attacking and the cards you can actually play this turn.
+- Use a **calculated greed** decision style: prefer the line with higher expected long-term reward when the extra risk is controlled and does not create a serious chance of immediate collapse.
+- Unified decision SOP:
+  1. Call `get_game_state(format="json")`.
+  2. Call `get_contextual_advice()`.
+  3. Form a provisional action using a calculated-greed standard.
+  4. If still uncertain, call only the most relevant targeted lookup tools.
+  5. Execute the action.
+- In combat, `get_contextual_advice()` already prioritizes:
+  - enemies currently attacking
+  - cards you can actually play this turn
+  - active powers / buffs / debuffs
+  - key mechanics such as block, vulnerable, weak, and poison
+- Outside combat, `get_contextual_advice()` already tries to reference:
+  - event knowledge on event screens
+  - reward and card reward knowledge
+  - affordable relic / card / potion knowledge in shops
+  - route-aware build and survival hints on the map
 - If you still need more detail, follow up with only the most relevant targeted lookup:
   - `lookup_enemy(enemy_name)` for a threatening enemy or boss
   - `lookup_card(card_name)` for a key hand card or reward card
   - `lookup_relic(relic_name)` when a relic changes sequencing or valuation
+  - `lookup_potion(potion_name)` when potion timing matters
+  - `lookup_event(event_name)` when an event branch has meaningful long-term tradeoffs
+  - `lookup_power(power_name)` or `lookup_mechanic(query)` when combat math is unclear
   - `lookup_builds(character_name)` when deck direction is unclear
 - Avoid calling every knowledge tool every turn. Prefer the smallest set of lookups that resolves the current decision.
+
+## Run-End Notifications
+
+- A standalone watcher script is available as `run_end_notifier.py`.
+- It polls the local STS2 MCP HTTP API and watches for a transition from an active run to `state_type = "menu"`.
+- When a run ends, it sends a Feishu webhook notification containing:
+  - likely result
+  - character
+  - act / floor reached
+  - ascension
+  - HP and gold
+  - relic count and potion count
+  - last visible screen
+- Run it with:
+
+```bash
+uv run --directory /path/to/STS2_MCP/mcp python run_end_notifier.py
+```
+
+- Optional flags:
+  - `--host`
+  - `--port`
+  - `--webhook-url`
+  - `--poll-interval`
 
 ## Singleplayer
 

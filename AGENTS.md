@@ -2,6 +2,13 @@
 
 ## MCP Tool Calling Tips
 
+### Decision Style
+- Use a **calculated greed** playstyle.
+- This means: prefer lines with clearly higher expected long-term value, even when they involve controlled short-term risk.
+- Do **not** default to the safest option when a riskier line has materially better upside and the run is not close to collapsing.
+- Do **not** confuse calculated greed with recklessness. Avoid lines that create a serious chance of immediate run death without commensurate payoff.
+- HP is a resource. Gold, relics, scaling, strong upgrades, and archetype-defining picks often justify taking manageable damage or risk.
+
 ### State Polling
 - After `combat_end_turn`, the state may show `is_play_phase: false` or `turn: enemy`. Call `get_game_state` again to advance to the next player turn.
 - Sometimes you need to call `get_game_state` twice — once to see enemy turn results, once to see your new hand.
@@ -21,41 +28,58 @@
 - Potions don't cost energy or count as card plays. Use buff potions BEFORE playing cards.
 
 ### Knowledge Tools
-- Use `get_contextual_advice()` when you want a fast state-aware summary before making a combat, map, reward, shop, or relic decision.
-- In combat, prefer this order:
-  1. `get_game_state(format="json")`
-  2. `get_contextual_advice()`
-  3. If still uncertain, call focused lookups such as `lookup_enemy(enemy_name)`, `lookup_card(card_name)`, or `lookup_relic(relic_name)`.
-- Use `lookup_enemy(enemy_name)` when a dangerous enemy, elite, or boss is on screen and its move pattern matters for the turn.
-- Use `lookup_card(card_name)` when a card in hand, a card reward, or a card selection screen contains a card whose role or scaling matters to the decision.
-- Use `lookup_relic(relic_name)` when a relic may change sequencing, valuation, or long-term routing.
+- Treat `get_contextual_advice()` as the default first knowledge step for any non-trivial decision.
+- Unified decision SOP:
+  1. Call `get_game_state(format="json")`.
+  2. Call `get_contextual_advice()`.
+  3. Form a provisional line using a **calculated greed** standard: prefer higher expected payoff when the added risk is controlled.
+  4. Only if still unclear, call 1-2 focused lookup tools to resolve the remaining uncertainty.
+  5. Execute the action.
+- In combat, `get_contextual_advice()` already tries to reference:
+  - enemies that are currently attacking
+  - cards you can actually play this turn
+  - active powers / buffs / debuffs
+  - relevant mechanic rules such as block, vulnerable, weak, or poison
+- Outside combat, `get_contextual_advice()` already tries to reference:
+  - event knowledge on event screens
+  - reward knowledge on reward and card reward screens
+  - affordable relic / card / potion knowledge in shops
+  - route-aware build and survival hints on the map
+- Use `lookup_enemy(enemy_name)` when a dangerous enemy, elite, or boss still needs more detailed move-context than `get_contextual_advice()` provided.
+- Use `lookup_card(card_name)` when a hand card, reward card, or selection card remains strategically unclear after the contextual summary.
+- Use `lookup_relic(relic_name)` when a relic may meaningfully change sequencing, valuation, or long-term routing.
+- Use `lookup_potion(potion_name)` when potion timing, target choice, or conservation is the key decision.
+- Use `lookup_event(event_name)` when an event branch has meaningful long-term consequences and the contextual summary is still insufficient.
+- Use `lookup_power(power_name)` or `lookup_mechanic(query)` when combat math depends on a specific status effect or rules interaction.
 - Use `lookup_builds(character_name)` when deck direction is unclear and you need high-level archetype guidance for the current character.
-- Use `get_general_strategy()` only for broad fallback guidance. Prefer the more targeted tools first.
-- Do NOT spam all knowledge tools every turn. Query only the 1-3 most relevant tools for the current decision.
-- During combat, trust `get_contextual_advice()` as the default knowledge entry point because it can already reference current enemies and key hand cards automatically.
+- Use `get_general_strategy()` only as a broad fallback. Prefer state-aware and targeted tools first.
+- Do NOT spam every knowledge tool every turn. Prefer the smallest set of lookups that resolves the current decision.
+- If `get_contextual_advice()` already provides enough guidance, do not redundantly repeat the same lookups unless you need more detail.
 
 ---
 
 ## General Strategy
 
 ### Core Principles
-1. **HP is a resource, not a score.** Take calculated damage to deal more. Don't waste energy on block when enemies aren't attacking.
-2. **Deck quality > deck size.** Skip card rewards if nothing synergizes. A lean deck draws key cards more often.
-3. **Front-load damage.** Killing enemies faster means less total damage taken.
-4. **Read intents carefully.** Sleep/Buff = go all-out offense. Attack = balance block and damage. Debuff = usually no damage, offense turn.
+1. **HP is a resource, not a score.** Spend it when the return is strong enough.
+2. **Prefer expected value, not safety theater.** Choose the line with better long-term payoff when the extra risk is controlled.
+3. **Deck quality > deck size.** Skip filler, but be willing to take powerful synergy and scaling pieces over merely safe cards.
+4. **Front-load damage and scaling.** Winning fights faster and snowballing harder usually beats over-defending.
+5. **Read intents carefully.** Sleep/Buff = punish greedily. Attack = balance block and damage. Debuff = often an invitation to push offense or setup.
 
 ### Combat Sequencing (General)
 1. Play 0-cost utility/setup cards first.
 2. Play skills before attacks when possible — many mechanics reward this order (e.g. Slow debuff on enemies stacks per card played).
 3. Play biggest attacks last to benefit from accumulated buffs/debuffs.
 4. Check enemy HP — if you can kill this turn, skip blocking entirely.
+5. Do not overvalue preventing small damage if a greedier line creates much better lethal, scaling, or tempo.
 
 ### Map Pathing
-- **Elites** give relics — fight them when healthy (>70% HP).
-- **Rest before Boss** — heal if below 80% HP. Boss fights are long and punishing.
-- **Unknown nodes** are safer than Elites. Good at medium HP.
-- **Shops** — visit with 100+ gold.
-- **Deck quality matters more than quantity** — don't add cards just because they're offered.
+- **Elites** give relics and snowball runs. Prefer elite routes aggressively when survival is still credible.
+- **Rest before Boss** only when the survival gain clearly beats the value of an upgrade.
+- **Unknown nodes** are flexible, but do not over-prefer them over clearly higher-value routes.
+- **Shops** are valuable with meaningful gold, especially when they can buy power spikes or remove weak cards.
+- **Deck quality matters more than quantity** — don't add cards just because they're offered, but do take strong archetype-defining cards.
 
 ### Boss Fights
 - **Kill the leader, not the minions.** Enemies with "Minion" power flee when their leader dies.
@@ -69,6 +93,7 @@
 
 ### Common Mistakes
 - Blocking when enemies are sleeping/buffing — waste of energy.
+- Taking the safest line by reflex when a greedier line has much better expected value.
 - Not checking card indices after playing — indices shift left.
 - Taking too long to kill bosses — enemies scale every turn.
 - Adding mediocre cards that dilute the deck before boss fights.
