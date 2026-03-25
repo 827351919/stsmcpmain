@@ -1,5 +1,8 @@
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -201,6 +204,7 @@ public static partial class McpMod
         }
 
         // Common run info
+        result["deck"] = BuildDeckState(runState);
         result["run"] = new Dictionary<string, object?>
         {
             ["act"] = runState.CurrentActIndex + 1,
@@ -209,6 +213,75 @@ public static partial class McpMod
         };
 
         return result;
+    }
+
+    private static Dictionary<string, object?> BuildDeckState(RunState runState)
+    {
+        var state = new Dictionary<string, object?>();
+        var player = LocalContext.GetMe(runState);
+        if (player == null)
+        {
+            state["available"] = false;
+            return state;
+        }
+
+        var cards = TryGetMasterDeckCards(player).ToList();
+        state["available"] = cards.Count > 0;
+        state["count"] = cards.Count;
+        state["upgraded_count"] = cards.Count(card => card.IsUpgraded);
+
+        var cardList = new List<Dictionary<string, object?>>();
+        foreach (var group in cards
+            .GroupBy(card => $"{card.Id.Entry}|{card.IsUpgraded}")
+            .OrderByDescending(group => group.Count())
+            .ThenBy(group => SafeGetText(() => group.First().Title) ?? group.First().Id.Entry))
+        {
+            var card = group.First();
+            cardList.Add(new Dictionary<string, object?>
+            {
+                ["id"] = card.Id.Entry,
+                ["name"] = SafeGetText(() => card.Title),
+                ["type"] = card.Type.ToString(),
+                ["rarity"] = card.Rarity.ToString(),
+                ["is_upgraded"] = card.IsUpgraded,
+                ["count"] = group.Count(),
+                ["description"] = SafeGetCardDescription(card, PileType.None)
+            });
+        }
+        state["cards"] = cardList;
+
+        return state;
+    }
+
+    private static IEnumerable<CardModel> TryGetMasterDeckCards(Player player)
+    {
+        object? deckObj = TryGetPropertyValue(player, "MasterDeck") ?? TryGetPropertyValue(player, "Deck");
+        if (deckObj == null)
+            yield break;
+
+        object? cardsObj = TryGetPropertyValue(deckObj, "Cards");
+        if (cardsObj is not IEnumerable enumerable)
+            yield break;
+
+        foreach (var item in enumerable)
+        {
+            if (item is CardModel card)
+                yield return card;
+        }
+    }
+
+    private static object? TryGetPropertyValue(object source, string propertyName)
+    {
+        try
+        {
+            return source.GetType()
+                .GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                ?.GetValue(source);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static Dictionary<string, object?> BuildBattleState(RunState runState, CombatRoom combatRoom)

@@ -5,6 +5,8 @@
 | Tool | Scope | Description |
 |---|---|---|
 | `get_game_state(format?)` | General | Get current game state (`markdown` or `json`) |
+| `get_fast_game_state()` | General | Get a compact JSON game state for lower token usage and faster decisions |
+| `get_run_policy()` | General | Read the active local build/pickup policy from `mcp/run_policy.json` |
 | `get_general_strategy(max_chars?)` | Knowledge | Get bundled high-level gameplay strategy notes |
 | `get_contextual_advice()` | Knowledge | Get lightweight state-aware advice using current game state |
 | `lookup_card(card_name)` | Knowledge | Look up a card by English/Chinese name or slug |
@@ -31,6 +33,13 @@
 | `relic_select(relic_index)` | Relic Select | Choose a relic from the selection screen |
 | `relic_skip()` | Relic Select | Skip relic selection |
 | `treasure_claim_relic(relic_index)` | Treasure | Claim a relic from the treasure chest |
+
+### Optional Run Policy
+
+Create `mcp/run_policy.json` to steer the agent toward a single archetype or stricter reward rules.
+You can start from `mcp/run_policy.example.json`.
+When present, the policy is attached to `get_game_state(json)` responses, included in `get_contextual_advice()`, and can be read directly with `get_run_policy()`.
+Card rewards, shop card purchases, and deck selection actions are also hard-guarded against off-policy choices when a run policy is active.
 
 ## Multiplayer
 

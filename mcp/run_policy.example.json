@@ -1,0 +1,32 @@
+{
+  "build_name": "Poison Shiv",
+  "core_cards": [
+    "Dagger Spray",
+    "Cloak and Dagger",
+    "Deadly Poison"
+  ],
+  "support_cards": [
+    "Backflip",
+    "Acrobatics",
+    "Footwork"
+  ],
+  "avoid_cards": [
+    "Heavy Blade",
+    "Body Slam"
+  ],
+  "remove_priority": [
+    "Strike",
+    "Defend"
+  ],
+  "upgrade_priority": [
+    "Deadly Poison",
+    "Cloak and Dagger",
+    "Footwork"
+  ],
+  "rules": [
+    "Only take cards that directly fit the target build or solve immediate survival problems.",
+    "Skip off-plan card rewards.",
+    "Prefer upgrades on core cards first.",
+    "Prefer relics and pathing that improve consistency over greedy side plans."
+  ]
+}

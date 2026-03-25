@@ -7,6 +7,7 @@ as MCP tools for Claude Desktop / Claude Code.
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -18,6 +19,9 @@ mcp = FastMCP("sts2")
 
 _base_url: str = "http://localhost:15526"
 _knowledge = KnowledgeBase()
+_client = httpx.AsyncClient(timeout=5)
+_server_dir = Path(__file__).resolve().parent
+_policy_path = _server_dir / "run_policy.json"
 
 
 def _sp_url() -> str:
@@ -29,31 +33,27 @@ def _mp_url() -> str:
 
 
 async def _get(params: dict | None = None) -> str:
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(_sp_url(), params=params)
-        r.raise_for_status()
-        return r.text
+    r = await _client.get(_sp_url(), params=params)
+    r.raise_for_status()
+    return r.text
 
 
 async def _post(body: dict) -> str:
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(_sp_url(), json=body)
-        r.raise_for_status()
-        return r.text
+    r = await _client.post(_sp_url(), json=body)
+    r.raise_for_status()
+    return r.text
 
 
 async def _mp_get(params: dict | None = None) -> str:
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(_mp_url(), params=params)
-        r.raise_for_status()
-        return r.text
+    r = await _client.get(_mp_url(), params=params)
+    r.raise_for_status()
+    return r.text
 
 
 async def _mp_post(body: dict) -> str:
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(_mp_url(), json=body)
-        r.raise_for_status()
-        return r.text
+    r = await _client.post(_mp_url(), json=body)
+    r.raise_for_status()
+    return r.text
 
 
 def _handle_error(e: Exception) -> str:
@@ -69,8 +69,430 @@ def _handle_error(e: Exception) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _load_run_policy() -> dict[str, Any] | None:
+    if not _policy_path.exists():
+        return None
+    try:
+        raw = json.loads(_policy_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "status": "invalid",
+            "path": str(_policy_path),
+            "error": "run_policy.json exists but could not be parsed as JSON.",
+        }
+
+    if not isinstance(raw, dict):
+        return {
+            "status": "invalid",
+            "path": str(_policy_path),
+            "error": "run_policy.json must contain a JSON object at the top level.",
+        }
+
+    raw.setdefault("status", "active")
+    raw.setdefault("path", str(_policy_path))
+    return raw
+
+
+def _policy_markdown(policy: dict[str, Any]) -> str:
+    lines = ["", "## Active Run Policy"]
+    build_name = policy.get("build_name")
+    if build_name:
+        lines.append(f"- Build: {build_name}")
+    preferred_cards = policy.get("preferred_cards") or policy.get("core_cards") or []
+    if preferred_cards:
+        lines.append("- Preferred cards: " + ", ".join(str(card) for card in preferred_cards[:10]))
+    avoid_cards = policy.get("avoid_cards") or []
+    if avoid_cards:
+        lines.append("- Avoid cards: " + ", ".join(str(card) for card in avoid_cards[:10]))
+    rules = policy.get("rules") or policy.get("reward_rules") or []
+    if isinstance(rules, list) and rules:
+        lines.append("- Rules: " + " | ".join(str(rule) for rule in rules[:5]))
+    elif isinstance(rules, dict) and rules:
+        compact = [f"{key}={value}" for key, value in list(rules.items())[:5]]
+        lines.append("- Rules: " + " | ".join(compact))
+    return "\n".join(lines)
+
+
+def _attach_policy(state: dict[str, Any]) -> dict[str, Any]:
+    policy = _load_run_policy()
+    if policy is not None:
+        state["agent_policy"] = policy
+    return state
+
+
+def _normalize_name(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return " ".join(text.split())
+
+
+def _policy_names(policy: dict[str, Any], key: str) -> list[str]:
+    values = policy.get(key) or []
+    if not isinstance(values, list):
+        return []
+    return [_normalize_name(value) for value in values if str(value).strip()]
+
+
+def _name_matches_policy(name: str, patterns: list[str]) -> bool:
+    normalized = _normalize_name(name)
+    return any(pattern and (normalized == pattern or pattern in normalized) for pattern in patterns)
+
+
+def _classify_card_name(name: str, policy: dict[str, Any]) -> tuple[str, str]:
+    normalized = _normalize_name(name)
+    if not normalized:
+        return "unknown", "No card name available."
+
+    core_cards = _policy_names(policy, "core_cards") + _policy_names(policy, "preferred_cards")
+    support_cards = _policy_names(policy, "support_cards")
+    avoid_cards = _policy_names(policy, "avoid_cards")
+    remove_priority = _policy_names(policy, "remove_priority")
+    upgrade_priority = _policy_names(policy, "upgrade_priority")
+
+    if _name_matches_policy(normalized, core_cards):
+        return "recommended", "Core card for the active build."
+    if _name_matches_policy(normalized, support_cards):
+        return "situational", "Support card that helps the active build."
+    if _name_matches_policy(normalized, avoid_cards):
+        return "off_policy", "Explicitly listed as an avoid card."
+    if _name_matches_policy(normalized, remove_priority):
+        return "remove_target", "This card is marked as a preferred removal target."
+    if _name_matches_policy(normalized, upgrade_priority):
+        return "upgrade_target", "This card is marked as a preferred upgrade target."
+    return "off_policy", "Not listed as a core or support card for the active build."
+
+
+def _annotate_card_list(cards: list[dict[str, Any]], policy: dict[str, Any]) -> None:
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        tag, reason = _classify_card_name(str(card.get("name", "")), policy)
+        card["policy_tag"] = tag
+        card["policy_reason"] = reason
+
+
+def _annotate_shop_items(items: list[dict[str, Any]], policy: dict[str, Any]) -> None:
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category", ""))
+        if category == "card":
+            name = str(item.get("card_name") or item.get("name") or "")
+            tag, reason = _classify_card_name(name, policy)
+        elif category == "card_removal":
+            tag, reason = "recommended", "Card removal improves deck consistency for this build."
+        else:
+            tag, reason = "allowed", "Non-card shop item; not blocked by build policy."
+        item["policy_tag"] = tag
+        item["policy_reason"] = reason
+
+
+def _annotate_rest_site(options: list[dict[str, Any]], state: dict[str, Any], policy: dict[str, Any]) -> None:
+    hp_ratio = _hp_ratio(state)
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        option_name = _normalize_name(option.get("name"))
+        if "smith" in option_name or "锻" in option_name or "升级" in option_name:
+            option["policy_tag"] = "recommended"
+            option["policy_reason"] = "Prefer upgrading core build pieces when possible."
+        elif ("rest" in option_name or "休息" in option_name) and hp_ratio is not None and hp_ratio < 0.45:
+            option["policy_tag"] = "recommended"
+            option["policy_reason"] = "Low HP override: resting is allowed for survival."
+        elif "rest" in option_name or "休息" in option_name:
+            option["policy_tag"] = "situational"
+            option["policy_reason"] = "Rest only when HP is too low to safely continue."
+        else:
+            option["policy_tag"] = "allowed"
+            option["policy_reason"] = "Not blocked by build policy."
+
+
+def _annotate_policy_choices(state: dict[str, Any]) -> dict[str, Any]:
+    policy = state.get("agent_policy")
+    if not isinstance(policy, dict) or not policy:
+        return state
+
+    card_reward_cards = _safe_get(state, "card_reward", "cards", default=[])
+    if isinstance(card_reward_cards, list):
+        _annotate_card_list(card_reward_cards, policy)
+
+    card_select_cards = _safe_get(state, "card_select", "cards", default=[])
+    if isinstance(card_select_cards, list):
+        _annotate_card_list(card_select_cards, policy)
+
+    shop_items = _safe_get(state, "shop", "items", default=[])
+    if isinstance(shop_items, list):
+        _annotate_shop_items(shop_items, policy)
+
+    rest_options = _safe_get(state, "rest_site", "options", default=[])
+    if isinstance(rest_options, list):
+        _annotate_rest_site(rest_options, state, policy)
+
+    return state
+
+
+async def _get_policy_state() -> dict[str, Any] | None:
+    raw = await _get({"format": "json"})
+    state = json.loads(raw)
+    if not isinstance(state, dict):
+        return None
+    return _annotate_policy_choices(_attach_policy(state))
+
+
+def _block_action(message: str) -> str:
+    return f"Blocked by run policy: {message}"
+
+
+async def _guard_card_reward_pick(card_index: int) -> str | None:
+    state = await _get_policy_state()
+    if state is None:
+        return None
+    cards = _safe_get(state, "card_reward", "cards", default=[])
+    if not isinstance(cards, list) or card_index < 0 or card_index >= len(cards):
+        return None
+    card = cards[card_index]
+    if not isinstance(card, dict):
+        return None
+    if card.get("policy_tag") == "off_policy":
+        return _block_action(
+            f"card reward '{card.get('name', '?')}' is off-policy. {card.get('policy_reason', '')} Use rewards_skip_card() unless survival absolutely requires a deviation."
+        )
+    return None
+
+
+async def _guard_shop_purchase(item_index: int) -> str | None:
+    state = await _get_policy_state()
+    if state is None:
+        return None
+    items = _safe_get(state, "shop", "items", default=[])
+    if not isinstance(items, list) or item_index < 0 or item_index >= len(items):
+        return None
+    item = items[item_index]
+    if not isinstance(item, dict):
+        return None
+    if item.get("policy_tag") == "off_policy":
+        item_name = item.get("card_name") or item.get("name") or item.get("category") or "item"
+        return _block_action(
+            f"shop item '{item_name}' is off-policy. {item.get('policy_reason', '')}"
+        )
+    return None
+
+
+async def _guard_deck_selection(card_index: int) -> str | None:
+    state = await _get_policy_state()
+    if state is None:
+        return None
+    screen = state.get("card_select")
+    if not isinstance(screen, dict):
+        return None
+    cards = screen.get("cards") or []
+    if not isinstance(cards, list) or card_index < 0 or card_index >= len(cards):
+        return None
+    card = cards[card_index]
+    if not isinstance(card, dict):
+        return None
+
+    screen_type = str(screen.get("screen_type", ""))
+    prompt = _normalize_name(screen.get("prompt"))
+    tag = str(card.get("policy_tag", ""))
+    name = str(card.get("name", "?"))
+
+    if screen_type == "upgrade" or "upgrade" in prompt or "升级" in prompt:
+        if tag != "upgrade_target":
+            return _block_action(f"upgrading '{name}' is not allowed right now. Prefer cards from upgrade_priority.")
+        return None
+
+    if screen_type in {"transform", "select", "simple_select"} or any(keyword in prompt for keyword in ("remove", "transform", "purge", "删除", "移除", "蜕变")):
+        if tag not in {"remove_target", "off_policy"}:
+            return _block_action(f"selecting '{name}' here is not allowed. Prefer remove_priority targets first.")
+        return None
+
+    if screen_type == "choose":
+        if tag == "off_policy":
+            return _block_action(f"choice '{name}' is off-policy. Prefer core or support cards only.")
+        return None
+
+    return None
+
+
+def _player_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    player = state.get("player")
+    if isinstance(player, dict):
+        return player
+
+    battle_player = _safe_get(state, "battle", "player", default={})
+    if isinstance(battle_player, dict):
+        return battle_player
+
+    for section_key in ("map", "event", "rest_site", "shop", "rewards", "treasure", "card_select", "relic_select"):
+        section_player = _safe_get(state, section_key, "player", default={})
+        if isinstance(section_player, dict) and section_player:
+            return section_player
+
+    return {}
+
+
+def _compact_card(card: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "index": card.get("index"),
+        "name": card.get("name"),
+        "cost": card.get("cost"),
+        "type": card.get("type"),
+        "can_play": card.get("can_play"),
+        "target_type": card.get("target_type"),
+    }
+
+
+def _compact_enemy(enemy: dict[str, Any]) -> dict[str, Any]:
+    intents = enemy.get("intents") or []
+    top_intent = intents[0] if intents else {}
+    return {
+        "entity_id": enemy.get("entity_id"),
+        "name": enemy.get("name"),
+        "hp": enemy.get("hp"),
+        "block": enemy.get("block"),
+        "intent": top_intent.get("title") or top_intent.get("type") or top_intent.get("label"),
+        "intent_label": top_intent.get("label"),
+    }
+
+
+def _compact_deck(deck: dict[str, Any]) -> dict[str, Any]:
+    cards = deck.get("cards") or []
+    return {
+        "count": deck.get("count"),
+        "upgraded_count": deck.get("upgraded_count"),
+        "top_cards": cards[:12],
+    }
+
+
+def _compact_screen_section(state: dict[str, Any]) -> dict[str, Any]:
+    state_type = state.get("state_type")
+    if state_type == "card_reward":
+        cards = _safe_get(state, "card_reward", "cards", default=[])
+        return {
+            "cards": [
+                {
+                    "index": card.get("index"),
+                    "name": card.get("name"),
+                    "cost": card.get("cost"),
+                    "type": card.get("type"),
+                    "rarity": card.get("rarity"),
+                }
+                for card in cards[:5]
+                if isinstance(card, dict)
+            ],
+            "can_skip": _safe_get(state, "card_reward", "can_skip"),
+        }
+
+    if state_type == "map":
+        options = _safe_get(state, "map", "next_options", default=[])
+        return {"next_options": options[:8]}
+
+    if state_type == "shop":
+        items = _safe_get(state, "shop", "items", default=[])
+        return {
+            "items": [
+                {
+                    "index": item.get("index"),
+                    "category": item.get("category"),
+                    "cost": item.get("cost"),
+                    "can_afford": item.get("can_afford"),
+                    "name": item.get("card_name") or item.get("relic_name") or item.get("potion_name") or item.get("category"),
+                }
+                for item in items[:12]
+                if isinstance(item, dict)
+            ],
+            "can_proceed": _safe_get(state, "shop", "can_proceed"),
+        }
+
+    if state_type == "rest_site":
+        options = _safe_get(state, "rest_site", "options", default=[])
+        return {"options": options}
+
+    if state_type == "event":
+        return {
+            "event_name": _safe_get(state, "event", "event_name"),
+            "in_dialogue": _safe_get(state, "event", "in_dialogue"),
+            "options": _safe_get(state, "event", "options", default=[]),
+        }
+
+    if state_type == "combat_rewards":
+        return {
+            "items": _safe_get(state, "rewards", "items", default=[]),
+            "can_proceed": _safe_get(state, "rewards", "can_proceed"),
+        }
+
+    if state_type == "relic_select":
+        relics = _safe_get(state, "relic_select", "relics", default=[])
+        return {"relics": relics[:5], "can_skip": _safe_get(state, "relic_select", "can_skip")}
+
+    if state_type == "treasure":
+        relics = _safe_get(state, "treasure", "relics", default=[])
+        return {"relics": relics[:5], "can_proceed": _safe_get(state, "treasure", "can_proceed")}
+
+    if state_type in {"card_select", "hand_select"}:
+        key = "card_select" if state_type == "card_select" else "hand_select"
+        cards = _safe_get(state, key, "cards", default=[])
+        return {
+            "prompt": _safe_get(state, key, "prompt"),
+            "cards": cards[:10],
+            "can_confirm": _safe_get(state, key, "can_confirm"),
+            "can_cancel": _safe_get(state, key, "can_cancel"),
+        }
+
+    return {}
+
+
+def _build_compact_state(state: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        "state_type": state.get("state_type"),
+        "run": state.get("run"),
+    }
+
+    player = _player_from_state(state)
+    if player:
+        compact["player"] = {
+            "character": player.get("character"),
+            "hp": player.get("hp"),
+            "max_hp": player.get("max_hp"),
+            "block": player.get("block"),
+            "energy": player.get("energy"),
+            "gold": player.get("gold"),
+        }
+
+    deck = state.get("deck")
+    if isinstance(deck, dict) and deck.get("available"):
+        compact["deck"] = _compact_deck(deck)
+
+    battle = state.get("battle")
+    if isinstance(battle, dict):
+        hand = _safe_get(battle, "player", "hand", default=[])
+        enemies = battle.get("enemies") or []
+        compact["battle"] = {
+            "round": battle.get("round"),
+            "turn": battle.get("turn"),
+            "is_play_phase": battle.get("is_play_phase"),
+            "hand": [_compact_card(card) for card in hand[:10] if isinstance(card, dict)],
+            "enemies": [_compact_enemy(enemy) for enemy in enemies[:6] if isinstance(enemy, dict)],
+        }
+
+    screen = _compact_screen_section(state)
+    if screen:
+        compact["screen"] = screen
+
+    policy = state.get("agent_policy")
+    if isinstance(policy, dict):
+        compact["agent_policy"] = {
+            "build_name": policy.get("build_name"),
+            "core_cards": policy.get("core_cards") or policy.get("preferred_cards"),
+            "avoid_cards": policy.get("avoid_cards"),
+            "rules": policy.get("rules") or policy.get("reward_rules"),
+        }
+
+    return compact
+
+
 @mcp.tool()
-async def get_game_state(format: str = "markdown") -> str:
+async def get_game_state(format: str = "markdown", detail: str = "full") -> str:
     """Get the current Slay the Spire 2 game state.
 
     Returns the full game state including player stats, hand, enemies, potions, etc.
@@ -78,11 +500,68 @@ async def get_game_state(format: str = "markdown") -> str:
 
     Args:
         format: "markdown" for human-readable output, "json" for structured data.
+        detail: "full" for the complete state, "compact" for a much shorter response.
     """
     try:
-        return await _get({"format": format})
+        raw = await _get({"format": format})
+        if format == "json":
+            state = json.loads(raw)
+            if not isinstance(state, dict):
+                return raw
+            enriched = _annotate_policy_choices(_attach_policy(state))
+            if detail == "compact":
+                enriched = _build_compact_state(enriched)
+            return json.dumps(enriched, ensure_ascii=False, indent=2)
+
+        if detail == "compact":
+            json_raw = await _get({"format": "json"})
+            state = json.loads(json_raw)
+            if not isinstance(state, dict):
+                return raw
+            compact = _build_compact_state(_annotate_policy_choices(_attach_policy(state)))
+            return json.dumps(compact, ensure_ascii=False, indent=2)
+
+        policy = _load_run_policy()
+        if policy is not None:
+            return raw.rstrip() + "\n" + _policy_markdown(policy) + "\n"
+        return raw
     except Exception as e:
         return _handle_error(e)
+
+
+@mcp.tool()
+async def get_fast_game_state() -> str:
+    """Get a compact JSON game state tuned for faster agent decisions.
+
+    This is the best default when you want lower token usage and quicker next-step choices.
+    """
+    return await get_game_state(format="json", detail="compact")
+
+
+@mcp.tool()
+async def get_run_policy() -> str:
+    """Read the active local run policy from mcp/run_policy.json.
+
+    Use this to enforce a specific archetype, pickup rule set, or speed preference.
+    """
+    policy = _load_run_policy()
+    if policy is None:
+        return (
+            f"No active run policy. Create {_policy_path.name} next to server.py to constrain the agent.\n\n"
+            '{\n'
+            '  "build_name": "Poison Shiv",\n'
+            '  "core_cards": ["Dagger Spray", "Cloak and Dagger"],\n'
+            '  "support_cards": ["Backflip", "Acrobatics"],\n'
+            '  "avoid_cards": ["Heavy Blade"],\n'
+            '  "remove_priority": ["Strike", "Defend"],\n'
+            '  "rules": [\n'
+            '    "Only take cards that directly fit the plan or fix survival.",\n'
+            '    "Skip off-plan card rewards.",\n'
+            '    "Prefer upgrades on core cards first."\n'
+            "  ]\n"
+            "}\n"
+        )
+    return json.dumps(policy, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -150,7 +629,7 @@ def _safe_get(mapping: dict[str, Any] | None, *keys: str, default: Any = None) -
 
 
 def _hp_ratio(state: dict[str, Any]) -> float | None:
-    player = state.get("player") or {}
+    player = _player_from_state(state)
     hp = player.get("hp")
     max_hp = player.get("max_hp")
     if isinstance(hp, (int, float)) and isinstance(max_hp, (int, float)) and max_hp > 0:
@@ -197,7 +676,7 @@ def _summarize_relic_synergy(state: dict[str, Any]) -> list[str]:
 
 def _contextual_advice_from_state(state: dict[str, Any]) -> str:
     state_type = state.get("state_type", "unknown")
-    player = state.get("player") or {}
+    player = _player_from_state(state)
     hp = player.get("hp", "?")
     max_hp = player.get("max_hp", "?")
     gold = player.get("gold", "?")
@@ -215,6 +694,19 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         lines.append("")
         lines.append("## Build Reference")
         lines.extend(build_hint.splitlines()[:6])
+
+    policy = state.get("agent_policy") or {}
+    if isinstance(policy, dict) and policy:
+        lines.append("")
+        lines.append("## Active Run Policy")
+        if policy.get("build_name"):
+            lines.append(f"- Target build: {policy['build_name']}")
+        preferred_cards = policy.get("core_cards") or policy.get("preferred_cards") or []
+        if preferred_cards:
+            lines.append("- Prioritize cards: " + ", ".join(str(card) for card in preferred_cards[:8]))
+        avoid_cards = policy.get("avoid_cards") or []
+        if avoid_cards:
+            lines.append("- Avoid cards: " + ", ".join(str(card) for card in avoid_cards[:8]))
 
     if state_type in {"monster", "elite", "boss", "hand_select"}:
         battle = state.get("battle") or {}
@@ -368,7 +860,7 @@ async def get_contextual_advice() -> str:
         state = json.loads(raw)
         if not isinstance(state, dict):
             return "Error: Unexpected game state payload."
-        return _contextual_advice_from_state(state)
+        return _contextual_advice_from_state(_attach_policy(state))
     except Exception as e:
         return _handle_error(e)
 
@@ -505,6 +997,9 @@ async def rewards_pick_card(card_index: int) -> str:
         card_index: 0-based index of the card to add to the deck.
     """
     try:
+        blocked = await _guard_card_reward_pick(card_index)
+        if blocked is not None:
+            return blocked
         return await _post({"action": "select_card_reward", "card_index": card_index})
     except Exception as e:
         return _handle_error(e)
@@ -568,6 +1063,9 @@ async def shop_purchase(item_index: int) -> str:
         item_index: 0-based index of the item from the shop state.
     """
     try:
+        blocked = await _guard_shop_purchase(item_index)
+        if blocked is not None:
+            return blocked
         return await _post({"action": "shop_purchase", "index": item_index})
     except Exception as e:
         return _handle_error(e)
@@ -624,6 +1122,9 @@ async def deck_select_card(card_index: int) -> str:
         card_index: 0-based index of the card (as shown in game state).
     """
     try:
+        blocked = await _guard_deck_selection(card_index)
+        if blocked is not None:
+            return blocked
         return await _post({"action": "select_card", "index": card_index})
     except Exception as e:
         return _handle_error(e)
