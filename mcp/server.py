@@ -219,19 +219,135 @@ def _hp_ratio(state: dict[str, Any]) -> float | None:
     return None
 
 
-def _recommend_map_node(next_options: list[dict[str, Any]], hp_ratio: float | None) -> str | None:
+def _player_relic_names(state: dict[str, Any]) -> list[str]:
+    player = state.get("player") or {}
+    relics = player.get("relics") or []
+    names: list[str] = []
+    for relic in relics:
+        if not isinstance(relic, dict):
+            continue
+        name = str(relic.get("name", "")).strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _collect_build_observations(
+    state: dict[str, Any],
+    *,
+    extra_terms: list[str] | None = None,
+) -> list[str]:
+    terms: list[str] = []
+    player = state.get("player") or {}
+    for relic_name in _player_relic_names(state):
+        terms.append(relic_name)
+
+    battle = state.get("battle") or {}
+    battle_player = battle.get("player") or {}
+    for zone_name in ("hand", "draw_pile", "discard_pile", "exhaust_pile"):
+        for card in battle_player.get(zone_name) or []:
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get("name", "")).strip()
+            if name:
+                terms.append(name)
+
+    reward = state.get("card_reward") or {}
+    for card in reward.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        name = str(card.get("name", "")).strip()
+        if name:
+            terms.append(name)
+
+    shop = state.get("shop") or {}
+    for card in shop.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        name = str(card.get("name", "")).strip()
+        if name:
+            terms.append(name)
+
+    if extra_terms:
+        terms.extend(extra_terms)
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for term in terms:
+        key = term.casefold()
+        if not term or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(term)
+    return deduped
+
+
+def _infer_build_context(
+    state: dict[str, Any],
+    *,
+    extra_terms: list[str] | None = None,
+) -> dict[str, Any] | None:
+    player = state.get("player") or {}
+    character = str(player.get("character", "")).strip()
+    if not character:
+        return None
+
+    observed_terms = _collect_build_observations(state, extra_terms=extra_terms)
+    build = _knowledge.infer_build(character, observed_terms)
+    if build is None:
+        return None
+
+    posture = _knowledge.build_posture(build)
+    return {
+        "character": character,
+        "observed_terms": observed_terms,
+        "build": build,
+        "posture": posture,
+        "match_score": int(build.get("_match_score", 0)),
+    }
+
+
+def _item_build_alignment(name: str, build_context: dict[str, Any] | None) -> int:
+    if not name or not build_context:
+        return 0
+    build = build_context.get("build")
+    return _knowledge.score_build_alignment(build, [name])
+
+
+def _recommend_map_node(
+    next_options: list[dict[str, Any]],
+    hp_ratio: float | None,
+    build_context: dict[str, Any] | None = None,
+) -> str | None:
     if not next_options:
         return None
 
     preferred_order: list[str]
+    posture = str((build_context or {}).get("posture", "balanced"))
     if hp_ratio is not None and hp_ratio < 0.35:
-        preferred_order = ["RestSite", "Shop", "Treasure", "Unknown", "Monster", "Elite"]
+        if posture == "aggressive":
+            preferred_order = ["Shop", "RestSite", "Treasure", "Unknown", "Monster", "Elite"]
+        else:
+            preferred_order = ["RestSite", "Shop", "Treasure", "Unknown", "Monster", "Elite"]
     elif hp_ratio is not None and hp_ratio < 0.55:
-        preferred_order = ["Shop", "RestSite", "Elite", "Unknown", "Monster", "Treasure"]
+        if posture == "aggressive":
+            preferred_order = ["Elite", "Shop", "Unknown", "Monster", "RestSite", "Treasure"]
+        elif posture == "setup":
+            preferred_order = ["Shop", "RestSite", "Unknown", "Monster", "Elite", "Treasure"]
+        else:
+            preferred_order = ["Shop", "Elite", "RestSite", "Unknown", "Monster", "Treasure"]
     elif hp_ratio is not None and hp_ratio > 0.7:
-        preferred_order = ["Elite", "Treasure", "Monster", "Unknown", "Shop", "RestSite"]
+        if posture == "setup":
+            preferred_order = ["Elite", "Shop", "Treasure", "Monster", "Unknown", "RestSite"]
+        else:
+            preferred_order = ["Elite", "Treasure", "Shop", "Monster", "Unknown", "RestSite"]
     else:
-        preferred_order = ["Elite", "Shop", "Unknown", "Monster", "Treasure", "RestSite"]
+        if posture == "aggressive":
+            preferred_order = ["Elite", "Shop", "Monster", "Treasure", "Unknown", "RestSite"]
+        elif posture == "setup":
+            preferred_order = ["Shop", "Elite", "Unknown", "Monster", "Treasure", "RestSite"]
+        else:
+            preferred_order = ["Elite", "Shop", "Unknown", "Monster", "Treasure", "RestSite"]
 
     for preferred in preferred_order:
         for option in next_options:
@@ -414,7 +530,11 @@ def _potion_knowledge_notes(state: dict[str, Any], max_notes: int = 3) -> list[s
     return notes
 
 
-def _reward_knowledge_notes(items: list[dict[str, Any]], max_notes: int = 4) -> list[str]:
+def _reward_knowledge_notes(
+    items: list[dict[str, Any]],
+    build_context: dict[str, Any] | None = None,
+    max_notes: int = 4,
+) -> list[str]:
     notes: list[str] = []
     def reward_score(item: dict[str, Any]) -> tuple[int, int]:
         item_type = str(item.get("type", ""))
@@ -433,7 +553,12 @@ def _reward_knowledge_notes(items: list[dict[str, Any]], max_notes: int = 4) -> 
 
     ranked_items = sorted(
         [item for item in items[:6] if isinstance(item, dict)],
-        key=reward_score,
+        key=lambda item: (
+            _item_build_alignment(
+                str(item.get("name", "") or _safe_get(item, item.get("type", ""), "name", default="")).strip(),
+                build_context,
+            ),
+        ) + reward_score(item),
         reverse=True,
     )
     for item in ranked_items:
@@ -457,15 +582,25 @@ def _reward_knowledge_notes(items: list[dict[str, Any]], max_notes: int = 4) -> 
                 if note:
                     notes.append(f"Reward cue: {note}")
         elif item_type in {"card", "special_card"}:
+            name = str(item.get("name", "") or _safe_get(item, "card", "name", default="")).strip()
             description = str(item.get("description", "")).strip()
-            if description:
+            alignment = _item_build_alignment(name, build_context)
+            if alignment > 0 and name:
+                notes.append(
+                    f"Reward cue: {name} fits your inferred build better than a generic pickup and can be worth prioritizing if the immediate opportunity cost is reasonable."
+                )
+            elif description:
                 notes.append(f"Reward cue: card reward can raise deck ceiling if it aligns with your archetype. {description}")
         if len(notes) >= max_notes:
             break
     return notes
 
 
-def _card_reward_knowledge_notes(cards: list[dict[str, Any]], max_notes: int = 3) -> list[str]:
+def _card_reward_knowledge_notes(
+    cards: list[dict[str, Any]],
+    build_context: dict[str, Any] | None = None,
+    max_notes: int = 3,
+) -> list[str]:
     notes: list[str] = []
     def card_score(card: dict[str, Any]) -> tuple[int, int, int]:
         rarity = str(card.get("rarity", "")).lower()
@@ -476,7 +611,7 @@ def _card_reward_knowledge_notes(cards: list[dict[str, Any]], max_notes: int = 3
 
     ranked_cards = sorted(
         [card for card in cards if isinstance(card, dict)],
-        key=card_score,
+        key=lambda card: (_item_build_alignment(str(card.get("name", "")).strip(), build_context),) + card_score(card),
         reverse=True,
     )
     for card in ranked_cards[:max_notes]:
@@ -487,11 +622,19 @@ def _card_reward_knowledge_notes(cards: list[dict[str, Any]], max_notes: int = 3
             continue
         note = _knowledge.brief_card_note(name)
         if note:
-            notes.append(f"Card reward cue: {note}")
+            alignment = _item_build_alignment(name, build_context)
+            if alignment > 0:
+                notes.append(f"Card reward cue: {name} matches your inferred build especially well. {note}")
+            else:
+                notes.append(f"Card reward cue: {note}")
     return notes
 
 
-def _shop_knowledge_notes(shop: dict[str, Any], max_notes: int = 4) -> list[str]:
+def _shop_knowledge_notes(
+    shop: dict[str, Any],
+    build_context: dict[str, Any] | None = None,
+    max_notes: int = 4,
+) -> list[str]:
     notes: list[str] = []
 
     affordable_relics = [
@@ -528,7 +671,7 @@ def _shop_knowledge_notes(shop: dict[str, Any], max_notes: int = 4) -> list[str]
             card for card in (shop.get("cards") or [])
             if isinstance(card, dict) and card.get("affordable")
         ],
-        key=shop_card_score,
+        key=lambda card: (_item_build_alignment(str(card.get("name", "")).strip(), build_context),) + shop_card_score(card),
         reverse=True,
     )
     for card in affordable_cards:
@@ -539,27 +682,43 @@ def _shop_knowledge_notes(shop: dict[str, Any], max_notes: int = 4) -> list[str]
             continue
         note = _knowledge.brief_card_note(name)
         if note:
-            notes.append(f"Shop cue: {note}")
+            alignment = _item_build_alignment(name, build_context)
+            if alignment > 0:
+                notes.append(f"Shop cue: {name} lines up well with your inferred build. {note}")
+            else:
+                notes.append(f"Shop cue: {note}")
         if len(notes) >= max_notes:
             return notes
 
     return notes
 
 
-def _map_knowledge_notes(character: str, hp_ratio: float | None, next_options: list[dict[str, Any]], max_notes: int = 2) -> list[str]:
+def _map_knowledge_notes(
+    character: str,
+    hp_ratio: float | None,
+    next_options: list[dict[str, Any]],
+    build_context: dict[str, Any] | None = None,
+    max_notes: int = 2,
+) -> list[str]:
     notes: list[str] = []
-    build_hint = _knowledge.lookup_builds(character, max_results=1)
-    if not build_hint.startswith("Unknown character") and not build_hint.startswith("No builds found"):
-        lines = build_hint.splitlines()
-        if len(lines) >= 4:
-            notes.append(f"Map cue: current archetype reference suggests {lines[3].strip()}")
+    build = (build_context or {}).get("build")
+    posture = str((build_context or {}).get("posture", "balanced"))
+    if build is not None:
+        plan = _knowledge.brief_build_plan(build)
+        if plan:
+            notes.append(f"Map cue: inferred build plan is {plan}")
 
     if next_options:
         types = [str(option.get("type", "?")) for option in next_options[:5]]
-        if hp_ratio is not None and hp_ratio < 0.5:
+        if posture == "aggressive" and hp_ratio is not None and hp_ratio >= 0.45:
             notes.append(
-                f"Map cue: with low HP, still take high-value routes when survival remains credible,"
-                f" but be selective among {', '.join(types)}."
+                f"Map cue: this build tends to snowball hard from relics and premium fights,"
+                f" so lean toward elite-heavy or shop-supported routes among {', '.join(types)}."
+            )
+        elif posture == "setup" and hp_ratio is not None and hp_ratio < 0.5:
+            notes.append(
+                f"Map cue: this build still wants payoff, but it needs enough life to finish setup,"
+                f" so bias toward shop or recovery before taking the next big risk among {', '.join(types)}."
             )
         elif hp_ratio is not None and hp_ratio > 0.7:
             notes.append(
@@ -578,6 +737,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
     gold = player.get("gold", "?")
     character = player.get("character", "Unknown")
     hp_ratio = _hp_ratio(state)
+    build_context = _infer_build_context(state)
 
     lines = [
         f"# Contextual Advice",
@@ -585,11 +745,24 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         f"- Character: {character} | HP: {hp}/{max_hp} | Gold: {gold}",
     ]
 
-    build_hint = _knowledge.lookup_builds(str(character), max_results=2)
-    if not build_hint.startswith("Unknown character") and not build_hint.startswith("No builds found"):
+    inferred_build = (build_context or {}).get("build")
+    inferred_plan = _knowledge.brief_build_plan(inferred_build)
+    if inferred_plan:
         lines.append("")
         lines.append("## Build Reference")
-        lines.extend(build_hint.splitlines()[:6])
+        lines.append(f"- Inferred build: {inferred_plan}")
+        match_score = int((build_context or {}).get("match_score", 0))
+        if match_score > 0:
+            lines.append(f"- Match confidence: {match_score}")
+        observed_terms = (build_context or {}).get("observed_terms") or []
+        if observed_terms:
+            lines.append(f"- Build signals seen: {', '.join(observed_terms[:6])}")
+    else:
+        build_hint = _knowledge.lookup_builds(str(character), max_results=2)
+        if not build_hint.startswith("Unknown character") and not build_hint.startswith("No builds found"):
+            lines.append("")
+            lines.append("## Build Reference")
+            lines.extend(build_hint.splitlines()[:6])
 
     if state_type in {"monster", "elite", "boss", "hand_select"}:
         battle = state.get("battle") or {}
@@ -676,7 +849,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
             lines.append("- Claim rewards from right to left to reduce index shifting mistakes.")
         if rewards.get("can_proceed"):
             lines.append("- Proceed only after the meaningful upside has been extracted from the reward screen.")
-        reward_notes = _reward_knowledge_notes(items, max_notes=4)
+        reward_notes = _reward_knowledge_notes(items, build_context=build_context, max_notes=4)
         if reward_notes:
             lines.append("")
             lines.append("## Knowledge References")
@@ -688,11 +861,23 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         cards = reward.get("cards") or []
         lines.append("")
         lines.append("## Card Reward Advice")
-        lines.append("- Prefer cards that materially raise your deck's ceiling or strengthen its current archetype; skip filler, but do not be overly afraid of narrow high-upside picks.")
+        if inferred_build is not None:
+            lines.append("- Prefer cards that clearly reinforce your inferred build or unlock a stronger branch of it; skip filler, but do not be overly afraid of narrow high-upside picks.")
+        else:
+            lines.append("- Prefer cards that materially raise your deck's ceiling or strengthen its current archetype; skip filler, but do not be overly afraid of narrow high-upside picks.")
         if cards:
-            names = ", ".join(str(card.get("name", "?")) for card in cards[:5])
+            ranked_cards = sorted(
+                [card for card in cards if isinstance(card, dict)],
+                key=lambda card: (
+                    _item_build_alignment(str(card.get("name", "")).strip(), build_context),
+                    1 if str(card.get("rarity", "")).lower() == "rare" else 0,
+                    1 if str(card.get("type", "")).lower() == "power" else 0,
+                ),
+                reverse=True,
+            )
+            names = ", ".join(str(card.get("name", "?")) for card in ranked_cards[:5])
             lines.append(f"- Offered cards: {names}")
-        card_reward_notes = _card_reward_knowledge_notes(cards, max_notes=3)
+        card_reward_notes = _card_reward_knowledge_notes(cards, build_context=build_context, max_notes=3)
         if card_reward_notes:
             lines.append("")
             lines.append("## Knowledge References")
@@ -706,11 +891,11 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         lines.append("## Map Advice")
         if hp_ratio is not None:
             lines.append(f"- HP ratio is about {hp_ratio:.0%}.")
-        suggestion = _recommend_map_node(next_options, hp_ratio)
+        suggestion = _recommend_map_node(next_options, hp_ratio, build_context=build_context)
         if suggestion:
             lines.append(f"- {suggestion}")
         lines.append("- Favor routes with better long-term reward density. Even at lower HP, take the greedier path when the survival risk is still acceptable.")
-        map_notes = _map_knowledge_notes(str(character), hp_ratio, next_options, max_notes=2)
+        map_notes = _map_knowledge_notes(str(character), hp_ratio, next_options, build_context=build_context, max_notes=2)
         if map_notes:
             lines.append("")
             lines.append("## Knowledge References")
@@ -733,7 +918,10 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         shop = state.get("shop") or {}
         lines.append("")
         lines.append("## Shop Advice")
-        lines.append("- Prioritize purchases that create a real power spike: high-impact relics first, then premium removal or cards that sharply improve your archetype.")
+        if inferred_build is not None:
+            lines.append("- Prioritize purchases that create a real power spike for your inferred build: high-impact relics first, then premium removal or cards that sharply reinforce the plan.")
+        else:
+            lines.append("- Prioritize purchases that create a real power spike: high-impact relics first, then premium removal or cards that sharply improve your archetype.")
         affordable_relics = [
             item.get("name", "?")
             for item in (shop.get("relics") or [])
@@ -741,7 +929,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         ]
         if affordable_relics:
             lines.append(f"- Affordable relics: {', '.join(affordable_relics[:4])}")
-        shop_notes = _shop_knowledge_notes(shop, max_notes=4)
+        shop_notes = _shop_knowledge_notes(shop, build_context=build_context, max_notes=4)
         if shop_notes:
             lines.append("")
             lines.append("## Knowledge References")
