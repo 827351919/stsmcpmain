@@ -195,6 +195,67 @@ def _summarize_relic_synergy(state: dict[str, Any]) -> list[str]:
     return notes
 
 
+def _pick_core_hand_cards(hand: list[dict[str, Any]], max_cards: int = 3) -> list[dict[str, Any]]:
+    def score(card: dict[str, Any]) -> tuple[int, int, int]:
+        card_type = str(card.get("type", "")).lower()
+        rarity = str(card.get("rarity", "")).lower()
+        playable = 1 if card.get("can_play") else 0
+        power = 1 if card_type == "power" else 0
+        zero_cost = 1 if card.get("cost") == 0 else 0
+        rare = 1 if rarity == "rare" else 0
+        return (playable, power + rare, zero_cost)
+
+    seen: set[str] = set()
+    ranked = sorted(hand, key=score, reverse=True)
+    picked: list[dict[str, Any]] = []
+    for card in ranked:
+        name = str(card.get("name", "")).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        picked.append(card)
+        if len(picked) >= max_cards:
+            break
+    return picked
+
+
+def _enemy_is_attacking(enemy: dict[str, Any]) -> bool:
+    intents = enemy.get("intents") or []
+    text = " ".join(str(intent.get("title", "")) + " " + str(intent.get("label", "")) for intent in intents)
+    lowered = text.lower()
+    return any(word in lowered for word in ("attack", "attacks", "damage", "hit"))
+
+
+def _prioritized_enemy_targets(enemies: list[dict[str, Any]], max_enemies: int = 2) -> list[dict[str, Any]]:
+    attackers = [enemy for enemy in enemies if _enemy_is_attacking(enemy)]
+    if attackers:
+        return attackers[:max_enemies]
+    return enemies[:max_enemies]
+
+
+def _combat_knowledge_notes(hand: list[dict[str, Any]], playable: list[dict[str, Any]], enemies: list[dict[str, Any]]) -> list[str]:
+    notes: list[str] = []
+
+    for enemy in _prioritized_enemy_targets(enemies, max_enemies=2):
+        enemy_name = str(enemy.get("name", "")).strip()
+        if not enemy_name:
+            continue
+        note = _knowledge.brief_enemy_note(enemy_name, max_moves=3)
+        if note:
+            notes.append(f"Enemy action cue: {note}")
+
+    source_cards = playable if playable else hand
+    for card in _pick_core_hand_cards(source_cards, max_cards=3):
+        card_name = str(card.get("name", "")).strip()
+        if not card_name:
+            continue
+        note = _knowledge.brief_card_note(card_name)
+        if note:
+            notes.append(f"Card action cue: {note}")
+
+    return notes
+
+
 def _contextual_advice_from_state(state: dict[str, Any]) -> str:
     state_type = state.get("state_type", "unknown")
     player = state.get("player") or {}
@@ -226,9 +287,7 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
         playable = [card for card in hand if card.get("can_play")]
         attacking = []
         for enemy in enemies:
-            intents = enemy.get("intents") or []
-            text = " ".join(str(intent.get("title", "")) + " " + str(intent.get("label", "")) for intent in intents)
-            if any(word in text.lower() for word in ("attack", "attacks", "damage", "hit")):
+            if _enemy_is_attacking(enemy):
                 attacking.append(enemy.get("name", enemy.get("entity_id", "Enemy")))
 
         lines.append("")
@@ -259,6 +318,13 @@ def _contextual_advice_from_state(state: dict[str, Any]) -> str:
 
         for note in _summarize_relic_synergy(state):
             lines.append(f"- {note}")
+
+        knowledge_notes = _combat_knowledge_notes(hand, playable, enemies)
+        if knowledge_notes:
+            lines.append("")
+            lines.append("## Knowledge References")
+            for note in knowledge_notes[:5]:
+                lines.append(f"- {note}")
 
     elif state_type == "combat_rewards":
         rewards = state.get("rewards") or {}

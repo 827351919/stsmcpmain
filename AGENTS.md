@@ -20,6 +20,20 @@
 - `use_potion(slot=N)` — slot is the potion slot index, not a card index.
 - Potions don't cost energy or count as card plays. Use buff potions BEFORE playing cards.
 
+### Knowledge Tools
+- Use `get_contextual_advice()` when you want a fast state-aware summary before making a combat, map, reward, shop, or relic decision.
+- In combat, prefer this order:
+  1. `get_game_state(format="json")`
+  2. `get_contextual_advice()`
+  3. If still uncertain, call focused lookups such as `lookup_enemy(enemy_name)`, `lookup_card(card_name)`, or `lookup_relic(relic_name)`.
+- Use `lookup_enemy(enemy_name)` when a dangerous enemy, elite, or boss is on screen and its move pattern matters for the turn.
+- Use `lookup_card(card_name)` when a card in hand, a card reward, or a card selection screen contains a card whose role or scaling matters to the decision.
+- Use `lookup_relic(relic_name)` when a relic may change sequencing, valuation, or long-term routing.
+- Use `lookup_builds(character_name)` when deck direction is unclear and you need high-level archetype guidance for the current character.
+- Use `get_general_strategy()` only for broad fallback guidance. Prefer the more targeted tools first.
+- Do NOT spam all knowledge tools every turn. Query only the 1-3 most relevant tools for the current decision.
+- During combat, trust `get_contextual_advice()` as the default knowledge entry point because it can already reference current enemies and key hand cards automatically.
+
 ---
 
 ## General Strategy

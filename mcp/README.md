@@ -1,5 +1,17 @@
 # MCP Tools
 
+## Recommended Flow
+
+- For most decisions, start with `get_game_state(format="json")`.
+- If you want a fast recommendation, call `get_contextual_advice()`.
+- In combat, `get_contextual_advice()` already prioritizes the enemies currently attacking and the cards you can actually play this turn.
+- If you still need more detail, follow up with only the most relevant targeted lookup:
+  - `lookup_enemy(enemy_name)` for a threatening enemy or boss
+  - `lookup_card(card_name)` for a key hand card or reward card
+  - `lookup_relic(relic_name)` when a relic changes sequencing or valuation
+  - `lookup_builds(character_name)` when deck direction is unclear
+- Avoid calling every knowledge tool every turn. Prefer the smallest set of lookups that resolves the current decision.
+
 ## Singleplayer
 
 | Tool | Scope | Description |
